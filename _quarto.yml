@@ -1,0 +1,25 @@
+project:
+  type: website
+  output-dir: "."
+
+website:
+  title: "Global Disease Burden Analysis"
+  navbar:
+    background: dark
+    left:
+      - text: "Home"
+        href: index.qmd
+      - text: "Interactive Visualizations"
+        href: viz.qmd
+    right:
+      - icon: github
+        href: https://github.com/Manmanhe1014/JSC370-Infectious-vs.-Non-Communicable-Disease-Burden-Across-Regions-and-Income-Levels
+  page-footer:
+    center: "JSC370 Final Project | Xiying He | University of Toronto | 2026"
+
+format:
+  html:
+    theme: lux
+    toc: true
+    code-fold: true
+    css: styles.css
