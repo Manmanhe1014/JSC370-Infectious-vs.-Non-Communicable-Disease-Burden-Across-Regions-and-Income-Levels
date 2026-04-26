@@ -12,7 +12,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-df = pd.read_csv("who_wb_cleaned.csv")
+df = pd.read_csv("data/who_wb_cleaned.csv")
 
 df["hiv_per1000"] = (df["hiv_new_infections_per1000"] / df["population"]) * 1000
 df["malaria_per100k"] = (df["malaria_deaths"] / df["population"]) * 100000
