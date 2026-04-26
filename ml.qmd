@@ -1,0 +1,511 @@
+---
+title: "Modeling: Global Disease Burden"
+author: "Xiying He"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: true
+    code-fold: true
+jupyter: python3
+---
+
+```{python}
+#| echo: false
+#| output: false
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import (train_test_split, RandomizedSearchCV,
+                                     StratifiedKFold)
+from sklearn.inspection import PartialDependenceDisplay
+from sklearn.preprocessing import LabelEncoder, label_binarize
+from xgboost import XGBClassifier, XGBRegressor
+from sklearn.metrics import (
+    accuracy_score, f1_score, confusion_matrix, classification_report,
+    roc_auc_score, roc_curve, auc,
+    r2_score, mean_squared_error, mean_absolute_error
+)
+import warnings
+warnings.filterwarnings("ignore")
+
+df = pd.read_csv("who_wb_cleaned.csv")
+print(f"Raw data: {df.shape[0]} rows, {df['country_code'].nunique()} countries")
+```
+
+# Feature Engineering
+
+```{python}
+#| label: feature-eng
+
+df["hiv_per1000"] = (df["hiv_new_infections_per1000"] / df["population"]) * 1000
+df["malaria_per100k"] = (df["malaria_deaths"] / df["population"]) * 100000
+
+df["log_gdp"] = np.log1p(df["gdp_per_capita_ppp"])
+
+df["tb_ncd_ratio"] = df["tb_incidence_per100k"] / (df["ncd_mortality_pct"] * 100)
+
+df["infectious_burden"] = (df["tb_incidence_per100k"]
+                           + df["hiv_per1000"] * 100
+                           + df["malaria_per100k"])
+
+df_model = df[df["year"] == 2019].copy().reset_index(drop=True)
+
+feature_cols = [
+    "tb_incidence_per100k", "ncd_mortality_pct", "hiv_per1000", "malaria_per100k",
+    "gdp_per_capita_ppp", "health_expenditure_pct_gdp", "urban_population_pct",
+    "log_gdp", "tb_ncd_ratio", "infectious_burden"
+]
+
+X = df_model[feature_cols].copy()
+print(f"Modeling dataset: {df_model.shape[0]} countries, {len(feature_cols)} features")
+print(f"Features: {feature_cols}")
+```
+
+---
+
+# Part 1: XGBoost Classification — Predicting Income Group
+
+We classify each country into one of four World Bank income groups using disease and economic indicators.
+
+## 1.1 Train/Test Split and Baseline Fit
+
+```{python}
+#| label: clf-baseline
+
+income_order = ["Low income", "Lower middle income", "Upper middle income", "High income"]
+le = LabelEncoder()
+le.fit(income_order)
+
+y_clf = le.transform(df_model["income_group"])
+
+X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(
+    X, y_clf, test_size=0.3, random_state=42, stratify=y_clf
+)
+
+print(f"Train: {X_train_c.shape[0]} | Test: {X_test_c.shape[0]}")
+print(f"Class distribution (train): {dict(zip(income_order, np.bincount(y_train_c)))}")
+
+xgb_base_clf = XGBClassifier(
+    n_estimators=200,
+    max_depth=5,
+    learning_rate=0.1,
+    importance_type="gain",
+    eval_metric="mlogloss",
+    random_state=42,
+    n_jobs=-1
+)
+xgb_base_clf.fit(X_train_c, y_train_c)
+
+y_pred_base_c = xgb_base_clf.predict(X_test_c)
+acc_base = accuracy_score(y_test_c, y_pred_base_c)
+f1_base = f1_score(y_test_c, y_pred_base_c, average="macro")
+print(f"Baseline — Accuracy: {acc_base:.3f} | Macro F1: {f1_base:.3f}")
+```
+
+## 1.2 Feature Importance (Baseline)
+
+```{python}
+#| label: fig-imp-clf
+#| fig-cap: "Feature importance (gain) from the baseline XGBoost classifier."
+
+imp_c = pd.Series(xgb_base_clf.feature_importances_, index=feature_cols)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+imp_c.sort_values().plot.barh(ax=ax, color="#1f77b4")
+ax.set_xlabel("Importance (mean gain)")
+ax.set_title("Feature Importance — Baseline XGBoost (Classification)")
+plt.tight_layout(); plt.show()
+
+print("Top 5:", imp_c.nlargest(5))
+```
+
+## 1.3 Bias-Variance Tradeoff
+
+```{python}
+#| label: fig-bv-clf
+#| fig-cap: "Training and test error as a function of boosting rounds."
+
+xgb_bv_clf = XGBClassifier(
+    n_estimators=600, max_depth=5, learning_rate=0.1,
+    eval_metric="mlogloss", random_state=42, n_jobs=-1
+)
+xgb_bv_clf.fit(X_train_c, y_train_c)
+
+n_rounds = list(range(10, 610, 10))
+train_err, test_err = [], []
+
+for n in n_rounds:
+    tr_pred = xgb_bv_clf.predict(X_train_c, iteration_range=(0, n))
+    te_pred = xgb_bv_clf.predict(X_test_c, iteration_range=(0, n))
+    train_err.append(1 - accuracy_score(y_train_c, tr_pred))
+    test_err.append(1 - accuracy_score(y_test_c, te_pred))
+
+fig, ax = plt.subplots(figsize=(9, 4))
+ax.plot(n_rounds, train_err, "o-", label="Training Error", markersize=3)
+ax.plot(n_rounds, test_err, "s-", label="Test Error", markersize=3)
+ax.set_xlabel("n_estimators (boosting rounds)")
+ax.set_ylabel("Error Rate (1 − Accuracy)")
+ax.set_title("Bias-Variance Tradeoff: Boosting Rounds vs Error (Classification)")
+ax.legend()
+plt.tight_layout(); plt.show()
+
+best_n_c = n_rounds[np.argmin(test_err)]
+print(f"Best round: {best_n_c} (test error: {min(test_err):.4f})")
+```
+
+## 1.4 Hyperparameter Tuning (RandomizedSearchCV)
+
+XGBoost minimizes a regularized objective with L2 ($\lambda$), L1 ($\alpha$), and tree complexity ($\gamma$) penalties:
+
+$$
+\mathcal{L} = \sum_i \ell(y_i, \hat{y}_i) + \sum_k \left[ \gamma T_k + \frac{1}{2}\lambda \lVert w_k \rVert^2 + \alpha \lVert w_k \rVert_1 \right]
+$$
+
+```{python}
+#| label: clf-tuning
+
+param_dist_clf = {
+    "max_depth": [3, 5, 7, 9],
+    "learning_rate": [0.01, 0.05, 0.1, 0.3],
+    "reg_lambda": [0.1, 1, 10],
+    "reg_alpha": [0, 0.1, 1],
+    "subsample": [0.7, 0.8, 1.0],
+}
+
+rand_search_clf = RandomizedSearchCV(
+    estimator=XGBClassifier(
+        n_estimators=300, eval_metric="mlogloss",
+        importance_type="gain", random_state=42, n_jobs=-1
+    ),
+    param_distributions=param_dist_clf,
+    n_iter=30,
+    cv=StratifiedKFold(5, shuffle=True, random_state=42),
+    scoring="f1_macro",
+    random_state=42, n_jobs=-1, verbose=1
+)
+rand_search_clf.fit(X_train_c, y_train_c)
+
+print(f"Best params: {rand_search_clf.best_params_}")
+print(f"Best CV Macro F1: {rand_search_clf.best_score_:.3f}")
+```
+
+## 1.5 Early Stopping
+
+```{python}
+#| label: clf-early-stop
+
+X_tr_c, X_val_c, y_tr_c, y_val_c = train_test_split(
+    X_train_c, y_train_c, test_size=0.2, random_state=42, stratify=y_train_c
+)
+
+xgb_es_clf = XGBClassifier(
+    n_estimators=2000,
+    **rand_search_clf.best_params_,
+    eval_metric="mlogloss",
+    early_stopping_rounds=50,
+    random_state=42, n_jobs=-1
+)
+xgb_es_clf.fit(X_tr_c, y_tr_c, eval_set=[(X_val_c, y_val_c)], verbose=False)
+
+print(f"Best iteration: {xgb_es_clf.best_iteration}")
+print(f"Val log-loss: {xgb_es_clf.best_score:.4f}")
+```
+
+## 1.6 Final Tuned Model
+
+```{python}
+#| label: clf-final
+
+best_n_est_clf = min(xgb_es_clf.best_iteration + 50, 2000)
+
+xgb_final_clf = XGBClassifier(
+    n_estimators=best_n_est_clf,
+    **rand_search_clf.best_params_,
+    eval_metric="mlogloss",
+    importance_type="gain",
+    random_state=42, n_jobs=-1
+)
+xgb_final_clf.fit(X_train_c, y_train_c)
+
+y_pred_tuned_c = xgb_final_clf.predict(X_test_c)
+acc_tuned = accuracy_score(y_test_c, y_pred_tuned_c)
+f1_tuned = f1_score(y_test_c, y_pred_tuned_c, average="macro")
+
+print(f"Tuned — Accuracy: {acc_tuned:.3f} | Macro F1: {f1_tuned:.3f}")
+print(f"Improvement over baseline — Accuracy: {acc_tuned - acc_base:+.3f} | F1: {f1_tuned - f1_base:+.3f}")
+```
+
+## 1.7 Confusion Matrix
+
+```{python}
+#| label: fig-confusion
+#| fig-cap: "Confusion matrix for the tuned XGBoost classifier on the test set."
+
+cm = confusion_matrix(y_test_c, y_pred_tuned_c)
+fig, ax = plt.subplots(figsize=(7, 5.5))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=income_order, yticklabels=income_order, ax=ax)
+ax.set_xlabel("Predicted")
+ax.set_ylabel("Actual")
+ax.set_title("Confusion Matrix — Tuned XGBoost")
+plt.tight_layout(); plt.show()
+
+print(classification_report(y_test_c, y_pred_tuned_c, target_names=income_order))
+```
+
+## 1.8 ROC Curves (One-vs-Rest)
+
+```{python}
+#| label: fig-roc
+#| fig-cap: "ROC curves (one-vs-rest) for all four income groups."
+
+y_test_bin = label_binarize(y_test_c, classes=[0, 1, 2, 3])
+y_prob_c = xgb_final_clf.predict_proba(X_test_c)
+
+fig, ax = plt.subplots(figsize=(7, 5.5))
+colors = ["#d62728", "#ff7f0e", "#2ca02c", "#1f77b4"]
+
+for i, (label, color) in enumerate(zip(income_order, colors)):
+    fpr, tpr, _ = roc_curve(y_test_bin[:, i], y_prob_c[:, i])
+    roc_auc_val = auc(fpr, tpr)
+    ax.plot(fpr, tpr, color=color, lw=2, label=f"{label} (AUC = {roc_auc_val:.2f})")
+
+ax.plot([0, 1], [0, 1], "k--", lw=1)
+ax.set_xlabel("False Positive Rate")
+ax.set_ylabel("True Positive Rate")
+ax.set_title("ROC Curves (One-vs-Rest) — Tuned XGBoost")
+ax.legend(loc="lower right", fontsize=9)
+plt.tight_layout(); plt.show()
+
+macro_auc = roc_auc_score(y_test_bin, y_prob_c, multi_class="ovr", average="macro")
+print(f"Macro AUC: {macro_auc:.3f}")
+```
+
+## 1.9 Partial Dependence Plots
+
+```{python}
+#| label: fig-pdp-clf
+#| fig-cap: "Partial dependence plots showing the marginal effect of the top 3 features on predicted income group."
+
+top3_clf = imp_c.nlargest(3).index.tolist()
+print(f"Plotting PDP for: {top3_clf}")
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+for i, feat in enumerate(top3_clf):
+    PartialDependenceDisplay.from_estimator(
+        xgb_final_clf, X_train_c, [feat],
+        target=0,
+        ax=axes[i], grid_resolution=50
+    )
+    axes[i].set_title(feat)
+fig.suptitle("Partial Dependence — XGBoost Classification (target: Low income)", y=1.02)
+plt.tight_layout(); plt.show()
+```
+
+---
+
+# Part 2: XGBoost Regression — Predicting Life Expectancy
+
+We predict life expectancy at birth from disease burden and economic indicators.
+
+## 2.1 Train/Test Split and Baseline Fit
+
+```{python}
+#| label: reg-baseline
+
+y_reg = df_model["life_expectancy"].copy()
+
+X_train_r, X_test_r, y_train_r, y_test_r = train_test_split(
+    X, y_reg, test_size=0.3, random_state=42
+)
+
+print(f"Train: {X_train_r.shape[0]} | Test: {X_test_r.shape[0]}")
+print(f"Life expectancy range: {y_reg.min():.1f} – {y_reg.max():.1f} years")
+
+xgb_base_reg = XGBRegressor(
+    n_estimators=200,
+    max_depth=5,
+    learning_rate=0.1,
+    importance_type="gain",
+    random_state=42,
+    n_jobs=-1
+)
+xgb_base_reg.fit(X_train_r, y_train_r)
+
+y_pred_base_r = xgb_base_reg.predict(X_test_r)
+rmse_base = np.sqrt(mean_squared_error(y_test_r, y_pred_base_r))
+r2_base = r2_score(y_test_r, y_pred_base_r)
+print(f"Baseline — RMSE: {rmse_base:.2f} years | R²: {r2_base:.4f}")
+```
+
+## 2.2 Feature Importance (Baseline)
+
+```{python}
+#| label: fig-imp-reg
+#| fig-cap: "Feature importance (gain) from the baseline XGBoost regressor."
+
+imp_r = pd.Series(xgb_base_reg.feature_importances_, index=feature_cols)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+imp_r.sort_values().plot.barh(ax=ax, color="#2ca02c")
+ax.set_xlabel("Importance (mean gain)")
+ax.set_title("Feature Importance — Baseline XGBoost (Regression)")
+plt.tight_layout(); plt.show()
+
+print("Top 5:", imp_r.nlargest(5))
+```
+
+## 2.3 Bias-Variance Tradeoff
+
+```{python}
+#| label: fig-bv-reg
+#| fig-cap: "Training and test RMSE as a function of boosting rounds."
+
+xgb_bv_reg = XGBRegressor(
+    n_estimators=600, max_depth=5, learning_rate=0.1,
+    random_state=42, n_jobs=-1
+)
+xgb_bv_reg.fit(X_train_r, y_train_r)
+
+n_rounds = list(range(10, 610, 10))
+train_err_r, test_err_r = [], []
+
+for n in n_rounds:
+    tr_pred = xgb_bv_reg.predict(X_train_r, iteration_range=(0, n))
+    te_pred = xgb_bv_reg.predict(X_test_r, iteration_range=(0, n))
+    train_err_r.append(np.sqrt(mean_squared_error(y_train_r, tr_pred)))
+    test_err_r.append(np.sqrt(mean_squared_error(y_test_r, te_pred)))
+
+fig, ax = plt.subplots(figsize=(9, 4))
+ax.plot(n_rounds, train_err_r, "o-", label="Training RMSE", markersize=3)
+ax.plot(n_rounds, test_err_r, "s-", label="Test RMSE", markersize=3)
+ax.set_xlabel("n_estimators (boosting rounds)")
+ax.set_ylabel("RMSE (years)")
+ax.set_title("Bias-Variance Tradeoff: Boosting Rounds vs RMSE (Regression)")
+ax.legend()
+plt.tight_layout(); plt.show()
+
+best_n_r = n_rounds[np.argmin(test_err_r)]
+print(f"Best round: {best_n_r} (test RMSE: {min(test_err_r):.3f} years)")
+```
+
+## 2.4 Hyperparameter Tuning (RandomizedSearchCV)
+
+```{python}
+#| label: reg-tuning
+
+param_dist_reg = {
+    "max_depth": [3, 5, 7, 9],
+    "learning_rate": [0.01, 0.05, 0.1, 0.3],
+    "reg_lambda": [0.1, 1, 10],
+    "reg_alpha": [0, 0.1, 1],
+    "subsample": [0.7, 0.8, 1.0],
+}
+
+rand_search_reg = RandomizedSearchCV(
+    estimator=XGBRegressor(
+        n_estimators=300, importance_type="gain",
+        random_state=42, n_jobs=-1
+    ),
+    param_distributions=param_dist_reg,
+    n_iter=30,
+    cv=5,
+    scoring="neg_root_mean_squared_error",
+    random_state=42, n_jobs=-1, verbose=1
+)
+rand_search_reg.fit(X_train_r, y_train_r)
+
+print(f"Best params: {rand_search_reg.best_params_}")
+print(f"Best CV RMSE: {-rand_search_reg.best_score_:.2f} years")
+```
+
+## 2.5 Early Stopping
+
+```{python}
+#| label: reg-early-stop
+
+X_tr_r, X_val_r, y_tr_r, y_val_r = train_test_split(
+    X_train_r, y_train_r, test_size=0.2, random_state=42
+)
+
+xgb_es_reg = XGBRegressor(
+    n_estimators=2000,
+    **rand_search_reg.best_params_,
+    early_stopping_rounds=50,
+    random_state=42, n_jobs=-1
+)
+xgb_es_reg.fit(X_tr_r, y_tr_r, eval_set=[(X_val_r, y_val_r)], verbose=False)
+
+print(f"Best iteration: {xgb_es_reg.best_iteration}")
+print(f"Val RMSE: {np.sqrt(xgb_es_reg.best_score):.2f} years")
+```
+
+## 2.6 Final Tuned Model
+
+```{python}
+#| label: reg-final
+
+best_n_est_reg = min(xgb_es_reg.best_iteration + 50, 2000)
+
+xgb_final_reg = XGBRegressor(
+    n_estimators=best_n_est_reg,
+    **rand_search_reg.best_params_,
+    importance_type="gain",
+    random_state=42, n_jobs=-1
+)
+xgb_final_reg.fit(X_train_r, y_train_r)
+
+y_pred_tuned_r = xgb_final_reg.predict(X_test_r)
+rmse_tuned = np.sqrt(mean_squared_error(y_test_r, y_pred_tuned_r))
+r2_tuned = r2_score(y_test_r, y_pred_tuned_r)
+mae_tuned = mean_absolute_error(y_test_r, y_pred_tuned_r)
+
+print(f"Tuned — RMSE: {rmse_tuned:.2f} years | R²: {r2_tuned:.4f} | MAE: {mae_tuned:.2f} years")
+print(f"Improvement in RMSE: {rmse_base - rmse_tuned:.2f} years")
+```
+
+## 2.7 Regression Diagnostics
+
+```{python}
+#| label: fig-diagnostics
+#| fig-cap: "Left: Predicted vs actual life expectancy with 45° reference line. Right: Residual distribution."
+
+residuals = y_test_r - y_pred_tuned_r
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+axes[0].scatter(y_test_r, y_pred_tuned_r, alpha=0.6, s=30,
+                edgecolors="white", linewidth=0.5, c="#2ca02c")
+mn, mx = y_test_r.min(), y_test_r.max()
+axes[0].plot([mn, mx], [mn, mx], "r--", lw=1.5)
+axes[0].set_xlabel("Actual Life Expectancy (years)")
+axes[0].set_ylabel("Predicted (years)")
+axes[0].set_title("Predicted vs Actual")
+axes[1].hist(residuals, bins=15, color="#2ca02c", edgecolor="white", alpha=0.8)
+axes[1].axvline(0, color="red", linestyle="--", lw=1.5)
+axes[1].set_xlabel("Residual (years)")
+axes[1].set_ylabel("Count")
+axes[1].set_title("Residual Distribution")
+
+plt.tight_layout(); plt.show()
+```
+
+## 2.8 Partial Dependence Plots
+
+```{python}
+#| label: fig-pdp-reg
+#| fig-cap: "Partial dependence plots showing the marginal effect of the top 3 features on predicted life expectancy."
+
+top3_reg = imp_r.nlargest(3).index.tolist()
+print(f"Plotting PDP for: {top3_reg}")
+
+fig, ax = plt.subplots(figsize=(14, 4))
+PartialDependenceDisplay.from_estimator(
+    xgb_final_reg, X_train_r, top3_reg,
+    ax=ax, grid_resolution=50
+)
+fig.suptitle("Partial Dependence — XGBoost Regression", y=1.02)
+plt.tight_layout(); plt.show()
+```

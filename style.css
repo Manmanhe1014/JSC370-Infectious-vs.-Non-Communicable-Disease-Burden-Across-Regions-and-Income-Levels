@@ -1,0 +1,82 @@
+/* Hero section styling */
+.hero-banner {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: white;
+    padding: 3rem 2rem;
+    border-radius: 12px;
+    margin-bottom: 2rem;
+  }
+  
+  .hero-banner h2 {
+    color: #e2e8f0;
+    border-bottom: none;
+    margin-top: 0;
+  }
+  
+  .hero-banner a {
+    color: #63b3ed;
+  }
+  
+  /* Card-style sections */
+  .card-section {
+    background: #f8f9fa;
+    border-left: 4px solid #0f3460;
+    padding: 1.2rem 1.5rem;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 1.5rem;
+  }
+  
+  /* Findings highlights */
+  .findings {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  
+  .finding-card {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-top: 3px solid #0f3460;
+    border-radius: 8px;
+    padding: 1.2rem;
+    text-align: center;
+  }
+  
+  .finding-card .number {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #0f3460;
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+  
+  .finding-card .label {
+    font-size: 0.9rem;
+    color: #666;
+  }
+  
+  /* Links section */
+  .links-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  
+  .link-card {
+    background: #0f3460;
+    color: white;
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    text-align: center;
+    text-decoration: none;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  
+  .link-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    color: white;
+    text-decoration: none;
+  }

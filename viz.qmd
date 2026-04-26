@@ -1,0 +1,240 @@
+---
+title: "Interactive Visualizations"
+jupyter: python3
+---
+
+```{python}
+#| echo: false
+#| output: false
+
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+
+df = pd.read_csv("who_wb_cleaned.csv")
+
+df["hiv_per1000"] = (df["hiv_new_infections_per1000"] / df["population"]) * 1000
+df["malaria_per100k"] = (df["malaria_deaths"] / df["population"]) * 100000
+
+df["tb_ncd_ratio"] = df["tb_incidence_per100k"] / (df["ncd_mortality_pct"] * 100)
+
+income_order = ["Low income", "Lower middle income", "Upper middle income", "High income"]
+df["income_group"] = pd.Categorical(df["income_group"], categories=income_order, ordered=True)
+```
+
+## Figure 1: Choropleth Map — Life Expectancy by Country
+
+This interactive choropleth map shows life expectancy at birth for each country in a selected year. Use the **animation slider** at the bottom to scrub through years from 2000 to 2021. Hover over any country to see its name, life expectancy, income group, and TB incidence. The map reveals how life expectancy gains have been widespread but uneven — sub-Saharan Africa shows the most dramatic improvements over the period, while high-income regions remain consistently at the top.
+
+```{python}
+#| label: fig-choropleth
+#| fig-cap: "Life expectancy at birth by country (2000–2021). Use the slider to animate across years. Hover for country-level details."
+
+df_map = df.copy()
+df_map["income_group"] = df_map["income_group"].astype(str)
+
+fig1 = px.choropleth(
+    df_map.sort_values("year"),
+    locations="country_code",
+    color="life_expectancy",
+    hover_name="country_name",
+    hover_data={
+        "life_expectancy": ":.1f",
+        "income_group": True,
+        "tb_incidence_per100k": ":.0f",
+        "ncd_mortality_pct": ":.1f",
+        "country_code": False,
+        "year": False
+    },
+    animation_frame="year",
+    color_continuous_scale="Viridis",
+    range_color=[40, 90],
+    labels={
+        "life_expectancy": "Life Expectancy (yrs)",
+        "tb_incidence_per100k": "TB Incidence (per 100k)",
+        "ncd_mortality_pct": "NCD Mortality (%)",
+        "income_group": "Income Group"
+    },
+    title="Life Expectancy at Birth by Country (2000–2021)"
+)
+
+fig1.update_layout(
+    geo=dict(
+        showframe=False,
+        showcoastlines=True,
+        coastlinecolor="lightgray",
+        projection_type="natural earth"
+    ),
+    width=900,
+    height=550,
+    margin=dict(l=0, r=0, t=50, b=0),
+    coloraxis_colorbar=dict(title="Years", len=0.6)
+)
+
+fig1.show()
+```
+
+## Figure 2: Sunburst Chart — Disease Burden Hierarchy
+
+This sunburst chart reveals the hierarchical structure of global TB burden: the inner ring shows WHO regions, the middle ring breaks each region into World Bank income groups, and the outer ring shows individual countries. Sector size encodes the mean TB incidence (per 100,000), and color encodes life expectancy — darker purple indicates lower life expectancy, brighter yellow indicates higher. **Click any sector to drill down** into that region or income group; click the center to zoom back out. The chart makes immediately visible that the Africa region dominates global TB burden, and that within Africa, low-income countries carry the heaviest load with the lowest life expectancy.
+
+```{python}
+#| label: fig-sunburst
+#| fig-cap: "Hierarchical disease burden (2019): WHO Region → Income Group → Country. Size = mean TB incidence; color = life expectancy. Click to drill down."
+
+df_2019 = df[df["year"] == 2019].copy()
+df_2019["income_group"] = df_2019["income_group"].astype(str)
+rows = []
+for _, r in df_2019.iterrows():
+    rows.append({
+        "id": r["who_region"] + " — " + r["income_group"] + " — " + r["country_name"],
+        "label": r["country_name"],
+        "parent": r["who_region"] + " — " + r["income_group"],
+        "value": r["tb_incidence_per100k"],
+        "color": r["life_expectancy"],
+        "hover": (
+            f"<b>{r['country_name']}</b><br>"
+            f"TB Incidence: {r['tb_incidence_per100k']:.0f} per 100k<br>"
+            f"Life Expectancy: {r['life_expectancy']:.1f} yrs<br>"
+            f"NCD Mortality: {r['ncd_mortality_pct']:.1f}%<br>"
+            f"Pop: {r['population']/1e6:.1f}M"
+        )
+    })
+inc_region = df_2019.groupby(["who_region", "income_group"]).agg(
+    tb=("tb_incidence_per100k", "mean"),
+    le=("life_expectancy", "mean"),
+    n=("country_name", "count")
+).reset_index()
+
+for _, r in inc_region.iterrows():
+    rows.append({
+        "id": r["who_region"] + " — " + r["income_group"],
+        "label": r["income_group"],
+        "parent": r["who_region"],
+        "value": 0,
+        "color": r["le"],
+        "hover": (
+            f"<b>{r['income_group']}</b> ({r['who_region']})<br>"
+            f"Mean TB: {r['tb']:.0f} per 100k<br>"
+            f"Mean Life Exp: {r['le']:.1f} yrs<br>"
+            f"Countries: {r['n']}"
+        )
+    })
+
+regions = df_2019.groupby("who_region").agg(
+    tb=("tb_incidence_per100k", "mean"),
+    le=("life_expectancy", "mean"),
+    n=("country_name", "count")
+).reset_index()
+
+for _, r in regions.iterrows():
+    rows.append({
+        "id": r["who_region"],
+        "label": r["who_region"],
+        "parent": "",
+        "value": 0,
+        "color": r["le"],
+        "hover": (
+            f"<b>{r['who_region']}</b><br>"
+            f"Mean TB: {r['tb']:.0f} per 100k<br>"
+            f"Mean Life Exp: {r['le']:.1f} yrs<br>"
+            f"Countries: {r['n']}"
+        )
+    })
+
+sun_df = pd.DataFrame(rows)
+
+fig2 = go.Figure(go.Sunburst(
+    ids=sun_df["id"],
+    labels=sun_df["label"],
+    parents=sun_df["parent"],
+    values=sun_df["value"],
+    marker=dict(
+        colors=sun_df["color"],
+        colorscale="Viridis",
+        colorbar=dict(title="Life Exp (yrs)", len=0.6)
+    ),
+    branchvalues="remainder",
+    hovertext=sun_df["hover"],
+    hoverinfo="text",
+    maxdepth=2
+))
+
+fig2.update_layout(
+    title="Global TB Burden Hierarchy: Region → Income Group → Country (2019)",
+    width=800,
+    height=700,
+    margin=dict(t=50, l=0, r=0, b=0)
+)
+
+fig2.show()
+```
+
+## Figure 3: Animated Bubble Chart — GDP, Life Expectancy & Disease Over Time
+
+Inspired by Hans Rosling's Gapminder visualization, this animated bubble chart tracks 178 countries from 2000 to 2021. The x-axis shows GDP per capita (log scale), the y-axis shows life expectancy, bubble size represents population, and color indicates income group. **Press play** to watch countries move over time — you can see low-income African nations climbing steadily upward in life expectancy while remaining at low GDP levels, and the global COVID-19 dip in 2020 pulling many countries downward. Hover over any bubble to see the country name and detailed statistics.
+
+```{python}
+#| label: fig-bubble
+#| fig-cap: "Gapminder-style animated bubble chart (2000–2021). X = GDP per capita (log); Y = life expectancy; size = population; color = income group. Press play to animate."
+
+df_bubble = df.copy()
+df_bubble["income_group"] = df_bubble["income_group"].astype(str)
+df_bubble["pop_millions"] = df_bubble["population"] / 1e6
+
+color_map = {
+    "Low income": "#d62728",
+    "Lower middle income": "#ff7f0e",
+    "Upper middle income": "#2ca02c",
+    "High income": "#1f77b4"
+}
+
+fig3 = px.scatter(
+    df_bubble.sort_values("year"),
+    x="gdp_per_capita_ppp",
+    y="life_expectancy",
+    animation_frame="year",
+    animation_group="country_code",
+    size="pop_millions",
+    size_max=60,
+    color="income_group",
+    color_discrete_map=color_map,
+    category_orders={"income_group": income_order},
+    hover_name="country_name",
+    hover_data={
+        "gdp_per_capita_ppp": ":$,.0f",
+        "life_expectancy": ":.1f",
+        "tb_incidence_per100k": ":.0f",
+        "ncd_mortality_pct": ":.1f",
+        "pop_millions": ":.1f",
+        "income_group": True,
+        "country_code": False
+    },
+    log_x=True,
+    range_x=[300, 150000],
+    range_y=[40, 90],
+    labels={
+        "gdp_per_capita_ppp": "GDP per Capita (PPP $)",
+        "life_expectancy": "Life Expectancy (years)",
+        "tb_incidence_per100k": "TB Incidence (per 100k)",
+        "ncd_mortality_pct": "NCD Mortality (%)",
+        "pop_millions": "Population (M)",
+        "income_group": "Income Group"
+    },
+    title="The World in Motion: GDP, Life Expectancy & Population (2000–2021)"
+)
+
+fig3.update_layout(
+    xaxis=dict(title="GDP per Capita (PPP $, log scale)"),
+    yaxis=dict(title="Life Expectancy (years)"),
+    legend=dict(title="Income Group", x=1.02, y=1, xanchor="left"),
+    width=900,
+    height=600,
+    margin=dict(t=60)
+)
+
+fig3.update_traces(marker=dict(opacity=0.75, line=dict(width=0.5, color="white")))
+
+fig3.show()
+```

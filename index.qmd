@@ -1,0 +1,34 @@
+---
+title: "Infectious vs. Non-Communicable Disease Burden Across Regions and Income Levels"
+---
+
+## Project Overview
+
+This project analyzes the relationship between economic development and global disease burden across 178 countries from 2000 to 2021, combining health data from the WHO Global Health Observatory with economic indicators from the World Bank.
+
+## Research Questions
+
+1. How do infectious versus non-communicable disease patterns differ across WHO regions and World Bank income groups?
+2. Which country-level factors — GDP, health spending, urbanization — best explain that variation?
+
+## Key Findings
+
+- **Low-income countries face a "double burden"** — they carry the highest rates of both infectious diseases (TB, HIV, malaria) and non-communicable diseases simultaneously, challenging the simple epidemiological transition model.
+- **Disease burden strongly predicts economic status.** An XGBoost classifier can accurately distinguish income groups using only health and economic indicators, with low-income countries being the most distinctly identifiable.
+- **Life expectancy is highly predictable from disease and economic indicators.** The composite infectious disease burden score and malaria death rate are the most powerful predictors, more so than GDP or health spending alone.
+- **Progress is real but uneven.** All income groups have seen improvements from 2000 to 2021, but the gap between low- and high-income countries persists, and COVID-19 caused a visible setback in 2020.
+- **How much a country spends on health matters less than what it spends on.** Health expenditure as a share of GDP shows surprisingly weak association with actual health outcomes, suggesting that resource allocation is more important than total spending.
+
+## Explore the Data
+
+- [Interactive Visualizations](viz.html) — Choropleth maps, sunburst charts, and animated bubble plots
+- [Download PDF Report](report.pdf) — Full analysis with methods, modeling, and results
+
+## Data Sources
+
+- [WHO Global Health Observatory API](https://ghoapi.azureedge.net/api/) — Life expectancy, TB incidence, malaria deaths, HIV infections, NCD mortality
+- [World Bank API](https://api.worldbank.org/v2/) — GDP per capita, health expenditure, urbanization, population
+
+## GitHub Repository
+
+- [GitHub Repository](https://github.com/Manmanhe1014/JSC370-Infectious-vs.-Non-Communicable-Disease-Burden-Across-Regions-and-Income-Levels)
